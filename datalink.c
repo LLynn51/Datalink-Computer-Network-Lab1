@@ -2,7 +2,7 @@
  * @ Author: LLynn51
  * @ Create Time: 2026-05-10 21:49:19
  * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 09:35:05
+ * @ Modified time: 2026-05-11 14:05:10
  * @ Description:
  */
 
@@ -97,8 +97,14 @@ int main(int argc, char **argv)
             i++;
         }
     }
-    if(max_seq_num>ABSOLUTE_MAX_SEQ_NUM)max_seq_num=ABSOLUTE_MAX_SEQ_NUM;
-    if(max_seq_num<=0)max_seq_num=7;
+    if(max_seq_num>ABSOLUTE_MAX_SEQ_NUM){
+        lprintf("Received illegal max_seq_num, restrict it to 7.");
+        max_seq_num=ABSOLUTE_MAX_SEQ_NUM;
+    }
+    if(max_seq_num<=0){
+        lprintf("Received illegal max_seq_num, restrict it to 7.");
+        max_seq_num=7;
+    }
 
 
     lprintf("Designed by LLynn, build: " __DATE__"  "__TIME__"\n");
