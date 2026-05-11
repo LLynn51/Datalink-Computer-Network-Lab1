@@ -2,7 +2,7 @@
  * @ Author: LLynn51
  * @ Create Time: 2026-05-10 21:49:19
  * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 14:05:10
+ * @ Modified time: 2026-05-11 17:56:42
  * @ Description:
  */
 
@@ -13,7 +13,10 @@
 #include "protocol.h"
 #include "datalink.h"
 
-#define DATA_TIMER  2000
+#define DATA_TIMER  1200
+#define ACK_TIMER 150
+static int has_piggybank=1;//
+
 #define ABSOLUTE_MAX_SEQ_NUM 255 // 由于seq类型为unsigned char，故最大窗口大小为255，否则会报错
 // 用于序号循环递增
 #define inc(k) if((k) < max_seq_num) (k)++; else (k) = 0; 
@@ -38,10 +41,9 @@ static int phl_ready = 0;
 
 // 实现软件协议跟踪
 static void trace_window_state(const char* action) {
-    lprintf("[%s] Sender Window: L=%d, R=%d, nbuffered=%d | Receiver expects: %d\n", 
+    dbg_event("[%s] Sender Window: L=%d, R=%d, nbuffered=%d | Receiver expects: %d\n", 
             action, send_window_l, send_window_r, nbuffered, frame_expected);
 }
-
 
 static void put_frame(unsigned char *frame, int len)
 {
@@ -99,7 +101,7 @@ int main(int argc, char **argv)
     }
     if(max_seq_num>ABSOLUTE_MAX_SEQ_NUM){
         lprintf("Received illegal max_seq_num, restrict it to 7.");
-        max_seq_num=ABSOLUTE_MAX_SEQ_NUM;
+        max_seq_num=7;
     }
     if(max_seq_num<=0){
         lprintf("Received illegal max_seq_num, restrict it to 7.");
@@ -108,6 +110,7 @@ int main(int argc, char **argv)
 
 
     lprintf("Designed by LLynn, build: " __DATE__"  "__TIME__"\n");
+    lprintf("Protocol Options: Piggybacking (Enabled), NAK (Enabled)");
 
     disable_network_layer();
 
@@ -115,10 +118,13 @@ int main(int argc, char **argv)
         event = wait_for_event(&arg);
 
         switch (event) {
+        //网络层准备好时，发送捎带ACK帧并取消计时器
         case NETWORK_LAYER_READY:
             get_packet(buffer[send_window_r]);
             nbuffered++;
             send_data_frame(send_window_r);
+            inc(send_window_r);
+            stop_ack_timer();
             trace_window_state("NETWORK_LAYER_READY, appended new packet.");
             break;
 
@@ -136,14 +142,15 @@ int main(int argc, char **argv)
             }
             if (f.kind == FRAME_ACK) 
                 dbg_frame("Recv ACK  %d\n", f.ack);
-            // 接收方接收到数据帧时，如果是预期中按序到达的数据帧，就发送ack帧，并右移接收窗口
+            // 接收方接收到数据帧时，如果是预期中按序到达的数据帧：
+            // 就右移接收窗口，并等待捎带帧一起发送ACK帧，直到ACK计时器超时
             if (f.kind == FRAME_DATA) {
                 dbg_frame("Recv DATA %d %d, ID %d\n", f.seq, f.ack, *(short *)f.data);
                 if (f.seq == frame_expected) {
                     put_packet(f.data, len - 7);
                     inc(frame_expected);
+                    start_ack_timer(ACK_TIMER);
                 }
-                send_ack_frame();
             }
             // 当发送端接收到的ack帧落在发送窗口中时，说明该ack帧对应的数据帧被正常接收
             // 停止计时，并右移发送窗口的左边界
@@ -164,7 +171,12 @@ int main(int argc, char **argv)
             }
             trace_window_state("DATA_TIMEOUT, resending");
             break;
+        case ACK_TIMEOUT:
+            dbg_event("---- ACK_TIMER expired, send pure ACK.");
+            send_ack_frame();
+            break;
         }
+        
         // 当缓冲区尚未塞满时，允许网络层继续向数据链路层发送数据包
         if (nbuffered < max_seq_num && phl_ready)
             enable_network_layer();

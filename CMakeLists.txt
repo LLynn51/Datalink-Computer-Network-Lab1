@@ -1,10 +1,17 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(ComputerNetworkLab1 C)
-
-set(CMAKE_C_STANDARD 99)
+ * @ Modified by: LLynn51
+ * @ Modified time: 2026-05-11 18:05:58
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 file(GLOB SOURCES "*.c")
 
-add_executable(datalink_lab ${SOURCES})
+# 将可执行文件直接输出到当前源码根目录
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR})
+
+
+add_executable(datalink ${SOURCES})
+
