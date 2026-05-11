@@ -2,7 +2,7 @@
  * @ Author: LLynn51
  * @ Create Time: 2026-05-10 21:49:19
  * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 19:56:09
+ * @ Modified time: 2026-05-11 22:20:57
  * @ Description:
  */
 
@@ -14,7 +14,7 @@
 #include "datalink.h"
 
 #define DATA_TIMER  1200
-#define ACK_TIMER 150
+#define ACK_TIMER 200
 
 #define ABSOLUTE_MAX_SEQ_NUM 255 // 由于seq类型为unsigned char，故最大窗口大小为255，否则会报错
 // no_nak 标识当前是否可以发送NAK帧。为1表示可以发送，为0表示已经发送过了。
@@ -189,9 +189,10 @@ int main(int argc, char **argv)
                     inc(frame_expected);
                     trace_window_state("DATA_TIMEOUT, resending");
                     start_ack_timer(ACK_TIMER);
+                    no_nak=1;
                 }else if (no_nak) {// 如果接收到无损数据帧，但序号不对，就发送带有期望数据帧序号的nak帧
                     dbg_event("**** Out of order frame %d (expected %d), sending NAK", f.seq, frame_expected);
-                    send_nak_frame(frame_expected); 
+                    send_nak_frame(); 
                     no_nak = 0; // 将no_nak的状态标记为不可发送
                 }
             }
