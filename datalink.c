@@ -2,7 +2,7 @@
  * @ Author: LLynn51
  * @ Create Time: 2026-05-10 21:49:19
  * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 08:54:52
+ * @ Modified time: 2026-05-11 09:35:05
  * @ Description:
  */
 
@@ -35,6 +35,13 @@ static unsigned char buffer[ABSOLUTE_MAX_SEQ_NUM+1][PKT_LEN], nbuffered=0;
 // 期望收到的ack帧的序号
 static unsigned char frame_expected = 0;
 static int phl_ready = 0;
+
+// 实现软件协议跟踪
+static void trace_window_state(const char* action) {
+    lprintf("[%s] Sender Window: L=%d, R=%d, nbuffered=%d | Receiver expects: %d\n", 
+            action, send_window_l, send_window_r, nbuffered, frame_expected);
+}
+
 
 static void put_frame(unsigned char *frame, int len)
 {
@@ -106,10 +113,12 @@ int main(int argc, char **argv)
             get_packet(buffer[send_window_r]);
             nbuffered++;
             send_data_frame(send_window_r);
+            trace_window_state("NETWORK_LAYER_READY, appended new packet.");
             break;
 
         case PHYSICAL_LAYER_READY:
             phl_ready = 1;
+            //由于PHYSICAL_LAYER_READY事件触发及其频繁，故不打印相关信息
             break;
 
         case FRAME_RECEIVED: 
@@ -137,6 +146,7 @@ int main(int argc, char **argv)
                 stop_timer(send_window_l);
                 inc(send_window_l);
             }
+            trace_window_state("FRAME_RECEIVED, window slides after ack");
             break; 
         // 若计时器超时后仍没有收到第arg帧，需要重发不在其之前的所有帧（从第arg帧到发送窗口最右端的帧）
         case DATA_TIMEOUT:
@@ -146,6 +156,7 @@ int main(int argc, char **argv)
                 send_data_frame(temp);
                 inc(temp);
             }
+            trace_window_state("DATA_TIMEOUT, resending");
             break;
         }
         // 当缓冲区尚未塞满时，允许网络层继续向数据链路层发送数据包
