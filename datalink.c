@@ -2,7 +2,7 @@
  * @ Author: LLynn51
  * @ Create Time: 2026-05-10 21:49:19
  * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 17:56:42
+ * @ Modified time: 2026-05-11 19:56:09
  * @ Description:
  */
 
@@ -15,9 +15,10 @@
 
 #define DATA_TIMER  1200
 #define ACK_TIMER 150
-static int has_piggybank=1;//
 
 #define ABSOLUTE_MAX_SEQ_NUM 255 // 由于seq类型为unsigned char，故最大窗口大小为255，否则会报错
+// no_nak 标识当前是否可以发送NAK帧。为1表示可以发送，为0表示已经发送过了。
+static int no_nak = 1;
 // 用于序号循环递增
 #define inc(k) if((k) < max_seq_num) (k)++; else (k) = 0; 
 // 判断序列号a是否在[b,c)窗口内，应对序列号循环的情况
@@ -25,11 +26,11 @@ static int has_piggybank=1;//
 static int max_seq_num=7; // 默认最大窗口大小为7 
 
 struct FRAME { 
-    unsigned char kind; /* FRAME_DATA */
-    unsigned char ack;
-    unsigned char seq;
-    unsigned char data[PKT_LEN]; //256
-    unsigned int  padding;
+    unsigned char kind; // 帧的类型，有 FRAME_DATA=1,FRAME_ACK=2,FRAME_NAK=3 这三种类型
+    unsigned char ack; // 对于数据帧，是期望收到的ACK帧的序号；对于ACK和NAK帧是上一个成功接收到的ACK帧的序号。
+    unsigned char seq; // 当前发送的帧的序号
+    unsigned char data[PKT_LEN]; // 有效载荷，PKT_LEN=256
+    unsigned int  padding; // 上述内容加在一起不足256字节时的填充
 };
 
 // 发送窗口的左沿和右沿，分别代表期待接收ack的最早帧和下一个要接收的数据帧
@@ -51,6 +52,21 @@ static void put_frame(unsigned char *frame, int len)
     send_frame(frame, len + 4);
     phl_ready = 0;
 }
+
+// send_nak_frame 在接收到错误序号的帧的时候及时返回NAK帧提前终止发送、开始重传
+static void send_nak_frame(void)
+{
+    struct FRAME s;
+    s.kind = FRAME_NAK;
+
+    // NAK序号为发送方最后一次成功发送的包
+    if(frame_expected == 0) s.ack = max_seq_num;
+    else s.ack = frame_expected - 1; 
+
+    dbg_frame("Send NAK %d\n", s.ack);
+    put_frame((unsigned char *)&s, 2);
+}
+
 
 static void send_data_frame(unsigned char frame_nr)//接收参数frame_nr表示本次调用函数要发送的帧序号
 {
@@ -118,7 +134,7 @@ int main(int argc, char **argv)
         event = wait_for_event(&arg);
 
         switch (event) {
-        //网络层准备好时，发送捎带ACK帧并取消计时器
+        // 当前端口网络层准备好时，发送捎带ACK帧并取消计时器
         case NETWORK_LAYER_READY:
             get_packet(buffer[send_window_r]);
             nbuffered++;
@@ -133,6 +149,8 @@ int main(int argc, char **argv)
             //由于PHYSICAL_LAYER_READY事件触发及其频繁，故不打印相关信息
             break;
 
+        
+        //当前端口作为接收方的情况
         case FRAME_RECEIVED: 
             len = recv_frame((unsigned char *)&f, sizeof f);
             // 检查文件是否损坏。如果损坏不需要重传，只是不发ack，直接等待超时处理。
@@ -140,18 +158,45 @@ int main(int argc, char **argv)
                 dbg_event("**** Receiver Error, Bad CRC Checksum\n");
                 break;
             }
-            if (f.kind == FRAME_ACK) 
-                dbg_frame("Recv ACK  %d\n", f.ack);
-            // 接收方接收到数据帧时，如果是预期中按序到达的数据帧：
+
+            // 作为发送方正常接收到ACK帧的情况
+            if (f.kind == FRAME_ACK) dbg_frame("Recv ACK  %d\n", f.ack);
+
+            
+            // 作为发送方收到NAK帧的情况
+            if (f.kind == FRAME_NAK){
+                // 计算需要重发的帧的序号
+                unsigned char missing = f.ack;
+                inc(missing);
+
+                dbg_frame("**** Recv NAK %d, immediate resending\n",f.ack);
+                // 像超时重传一样，从NAK帧好开始进行超时重传
+                unsigned char temp = missing;
+                for (int i = 0; i < nbuffered; i++) {
+                    if (between(send_window_l, temp, send_window_r)) {
+                        send_data_frame(temp);
+                        inc(temp);
+                    }
+                }
+            }
+
+            // 接收方接收到无损数据帧时，如果是预期中按序到达的数据帧，
             // 就右移接收窗口，并等待捎带帧一起发送ACK帧，直到ACK计时器超时
             if (f.kind == FRAME_DATA) {
                 dbg_frame("Recv DATA %d %d, ID %d\n", f.seq, f.ack, *(short *)f.data);
                 if (f.seq == frame_expected) {
                     put_packet(f.data, len - 7);
                     inc(frame_expected);
+                    trace_window_state("DATA_TIMEOUT, resending");
                     start_ack_timer(ACK_TIMER);
+                }else if (no_nak) {// 如果接收到无损数据帧，但序号不对，就发送带有期望数据帧序号的nak帧
+                    dbg_event("**** Out of order frame %d (expected %d), sending NAK", f.seq, frame_expected);
+                    send_nak_frame(frame_expected); 
+                    no_nak = 0; // 将no_nak的状态标记为不可发送
                 }
             }
+
+
             // 当发送端接收到的ack帧落在发送窗口中时，说明该ack帧对应的数据帧被正常接收
             // 停止计时，并右移发送窗口的左边界
             while (between(send_window_l, f.ack, send_window_r)) {
@@ -161,9 +206,20 @@ int main(int argc, char **argv)
             }
             trace_window_state("FRAME_RECEIVED, window slides after ack");
             break; 
+
+
+        // 作为接收方的情况
+        case ACK_TIMEOUT: // ACK计时器超时时没有可以捎带ACK的数据帧，直接发送纯ACK
+            dbg_event("**** ACK_TIMER expired, send pure ACK.");
+            send_ack_frame();
+            trace_window_state("ACK_TIMER expired, send pure ACK.");
+            break;
+        
+
+        // 作为发送方的情况
         // 若计时器超时后仍没有收到第arg帧，需要重发不在其之前的所有帧（从第arg帧到发送窗口最右端的帧）
         case DATA_TIMEOUT:
-            dbg_event("---- DATA %d timeout, FRAME not in front of it needs to be send again\n", arg); 
+            dbg_event("**** DATA %d timeout, FRAME not in front of it needs to be send again\n", arg); 
             unsigned char temp = send_window_l; //从未确认的第一个包开始
             for (int i = 0; i < nbuffered; i++) {
                 send_data_frame(temp);
@@ -171,12 +227,8 @@ int main(int argc, char **argv)
             }
             trace_window_state("DATA_TIMEOUT, resending");
             break;
-        case ACK_TIMEOUT:
-            dbg_event("---- ACK_TIMER expired, send pure ACK.");
-            send_ack_frame();
-            break;
-        }
         
+        }
         // 当缓冲区尚未塞满时，允许网络层继续向数据链路层发送数据包
         if (nbuffered < max_seq_num && phl_ready)
             enable_network_layer();

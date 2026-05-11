@@ -1,8 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(ComputerNetworkLab1 C)
- * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 18:05:58
+
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 file(GLOB SOURCES "*.c")
