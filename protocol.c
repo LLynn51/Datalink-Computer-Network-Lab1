@@ -152,6 +152,7 @@ static void config(int argc, char **argv)
 			"    -b, --ber=<ber> : Bit Error Rate (received data only)\n"
 			"    -l, --log=<filename> : using assigned file as log file\n"
 			"    -t, --ttl=<seconds> : set time-to-live\n"
+            "    -w, --w=<window_size> : set window size\n"
 			"\n"
 			"i.e.\n"
 			"    %s -fd3 -b 1e-4 A\n"

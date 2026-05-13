@@ -2,7 +2,7 @@
  * @ Author: LLynn51
  * @ Create Time: 2026-05-10 21:49:19
  * @ Modified by: LLynn51
- * @ Modified time: 2026-05-11 22:20:57
+ * @ Modified time: 2026-05-13 16:20:04
  * @ Description:
  */
 
@@ -13,8 +13,8 @@
 #include "protocol.h"
 #include "datalink.h"
 
-#define DATA_TIMER  1200
-#define ACK_TIMER 200
+#define DATA_TIMER  2000
+#define ACK_TIMER 150
 
 #define ABSOLUTE_MAX_SEQ_NUM 255 // 由于seq类型为unsigned char，故最大窗口大小为255，否则会报错
 // no_nak 标识当前是否可以发送NAK帧。为1表示可以发送，为0表示已经发送过了。
@@ -23,7 +23,7 @@ static int no_nak = 1;
 #define inc(k) if((k) < max_seq_num) (k)++; else (k) = 0; 
 // 判断序列号a是否在[b,c)窗口内，应对序列号循环的情况
 #define between(a,b,c) (((a)<=(b) && (b)<(c)) || ((c)<(a) && (a)<=(b)) || ((b)<(c) && (c)<(a)))
-static int max_seq_num=7; // 默认最大窗口大小为7 
+int max_seq_num=7; // 默认最大窗口大小为7 
 
 struct FRAME { 
     unsigned char kind; // 帧的类型，有 FRAME_DATA=1,FRAME_ACK=2,FRAME_NAK=3 这三种类型
@@ -105,28 +105,25 @@ int main(int argc, char **argv)
     int event, arg;
     struct FRAME f;
     int len = 0;
+    
+    //从命令行接收窗口大小（默认为7）
+    for(int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
+            max_seq_num = atoi(argv[i + 1]);
+            // 避免后续底层库解析出错
+            argv[i][0] = '\0'; 
+            argv[i+1][0] = '\0';
+            // 简单校验
+            if (max_seq_num <= 0 || max_seq_num > ABSOLUTE_MAX_SEQ_NUM) {
+                max_seq_num = 7;
+            }
+        }
+    }
 
     protocol_init(argc, argv); 
 
-    // 从命令行接收窗口大小（窗口大小默认为7）
-    for(int i=1;i<argc;i++){
-        if(strcmp(argv[i],"-w")==0&&i+1<argc){
-            max_seq_num=atoi(argv[i+1]);
-            i++;
-        }
-    }
-    if(max_seq_num>ABSOLUTE_MAX_SEQ_NUM){
-        lprintf("Received illegal max_seq_num, restrict it to 7.");
-        max_seq_num=7;
-    }
-    if(max_seq_num<=0){
-        lprintf("Received illegal max_seq_num, restrict it to 7.");
-        max_seq_num=7;
-    }
-
-
     lprintf("Designed by LLynn, build: " __DATE__"  "__TIME__"\n");
-    lprintf("Protocol Options: Piggybacking (Enabled), NAK (Enabled)");
+    lprintf("Protocol Options: Piggybacking (Enabled), NAK (Enabled),Window size:%d",max_seq_num);
 
     disable_network_layer();
 

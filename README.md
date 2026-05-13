@@ -15,25 +15,25 @@
 ## 参考命令
 
 1. 无误码信道数据传输 (Utopia 模式) ：没有丢包。
-**终端 1 (站点 A)**: `.\datalink A -u -t 60`
-**终端 2 (站点 B)**: `.\datalink B -u -t 60`
+**终端 1 (站点 A)**: `.\datalink A -u -t 600`
+**终端 2 (站点 B)**: `.\datalink B -u -t 600`
 
 2. 默认模式：使用框架默认的 1e-5 误码率。A 平缓发，B 周期性发。
-**终端 1 (站点 A)**: `.\datalink A -t 60`
-**终端 2 (站点 B)**: `.\datalink B -t 60`
+**终端 1 (站点 A)**: `.\datalink A -t 600`
+**终端 2 (站点 B)**: `.\datalink B -t 600`
 
 3. 无误码，洪泛式发送 (Utopia + Flood)：没有丢包，且双方网络层互相发送大量数据。用于测试**极限吞吐量（最大利用率）**。
-**终端 1 (站点 A)**: `.\datalink A -u -f -t 60`
-**终端 2 (站点 B)**: `.\datalink B -u -f -t 60`
+**终端 1 (站点 A)**: `.\datalink A -u -f -t 600`
+**终端 2 (站点 B)**: `.\datalink B -u -f -t 600`
 
 4. 有误码，洪泛式发送 (Flood)：双方网络层互相发送大量数据，用于测试**超时重传机制**
-**终端 1 (站点 A)**: `.\datalink A -f -t 60`
-**终端 2 (站点 B)**: `.\datalink B -f -t 60`
+**终端 1 (站点 A)**: `.\datalink A -f -t 600`
+**终端 2 (站点 B)**: `.\datalink B -f -t 600`
 
 5. 高误码率，洪泛式发送 (Flood + BER) ：大量丢包，且双方网络层互相发送大量数据。用于测试协议在恶劣环境下的**健壮性**。
-**终端 1 (站点 A)**: `.\datalink A -f -b 1e-4 -t 60`
-**终端 2 (站点 B)**: `.\datalink B -f -b 1e-4 -t 60`
+**终端 1 (站点 A)**: `.\datalink A -f -b 1e-4 -t 600`
+**终端 2 (站点 B)**: `.\datalink B -f -b 1e-4 -t 600`
 
 6. 测试窗口性能 (Flood)：用于测试窗口大小对利用率的影响。
-**终端 1 (站点 A)**: `.\datalink A -f -w <window-size>`
-**终端 2 (站点 B)**: `.\datalink B -f -w <window-size>`
+**终端 1 (站点 A)**: `.\datalink A -f -w <window-size> -t 600`
+**终端 2 (站点 B)**: `.\datalink B -f -w <window-size> -t 600`
