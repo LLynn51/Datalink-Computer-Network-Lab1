@@ -64,7 +64,7 @@ static void send_data_frame(unsigned char frame_nr);
 static void send_ack_frame(void);
 ```
 
-![alt text](image.png)
+![alt text](pics/模块关系.jpg)
 
 ### 算法原型
 
@@ -83,6 +83,8 @@ static void send_ack_frame(void);
 4. ACK超时 (ACK_TIMEOUT)：说明一直没有己方数据帧可以捎带确认，被迫发送一个纯ACK帧。
 5. 数据超时 (DATA_TIMEOUT)：典型的GBN操作。从发送窗口的左沿（未确认的第一个帧）开始，把窗口内所有缓存的数据帧重新发送一遍。
 6. 流量控制：判断当前缓冲区包数 nbuffered < max_seq_num 且物理层就绪时，开启网络层（允许其下发新数据）；否则关闭网络层，实现背压限流。循环回到步骤2。
+
+![alt text](pics/算法流程.png)
 
 ## 实验结果分析
 
