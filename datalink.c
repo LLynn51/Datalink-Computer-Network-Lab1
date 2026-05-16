@@ -142,8 +142,6 @@ static void parse_window_option(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
             sr_window_size = atoi(argv[i + 1]);
-            argv[i][0] = '\0';
-            argv[i + 1][0] = '\0';
             break;
         }
     }
@@ -235,7 +233,6 @@ int main(int argc, char **argv)
                     deliver_ordered_frames();
                     if (was_expected)
                         no_nak = 1;
-                    start_ack_timer(ACK_TIMER);
                 } else {
                     send_ack_frame(f.seq);
                 }

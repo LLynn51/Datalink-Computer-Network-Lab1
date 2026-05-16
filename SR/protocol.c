@@ -127,10 +127,11 @@ static struct option intopts[] = {
 	{ "ber",	required_argument, NULL, 'b' },
 	{ "log",	required_argument, NULL, 'l' },
 	{ "ttl",    required_argument, NULL, 't' },
+	{ "w",      required_argument, NULL, 'w' },
 	{ 0, 0, 0, 0 },
 };
 
-#define OPT_SHORT "?ufind:p:b:l:t:"
+#define OPT_SHORT "?ufind:p:b:l:t:w:"
 
 static void config(int argc, char **argv)
 {
@@ -215,6 +216,9 @@ static void config(int argc, char **argv)
 
 		case 't':
 			mode_life = atoi(optarg) * 1000; /* ms */
+			break;
+
+		case 'w':
 			break;
 
 		default:
