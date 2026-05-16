@@ -135,6 +135,7 @@ static struct option intopts[] = {
 static void config(int argc, char **argv)
 {
 	char fname[1024];
+	char *station_arg;
 	int   i, opt;
 
 	if (argc < 2) {
@@ -225,9 +226,33 @@ static void config(int argc, char **argv)
 	if (optind == argc) 
 		goto usage;
 
-	station = tolower(argv[optind++][0]);
+	station_arg = argv[optind++];
+	station = tolower(station_arg[0]);
 	if (station != 'a' && station != 'b')
 		ABORT("Station name must be 'A' or 'B'");
+
+	for (i = 1; station_arg[i]; i++) {
+		switch (tolower(station_arg[i])) {
+		case 'u':
+			ber = 0.0;
+			break;
+
+		case 'f':
+			mode_flood = 1;
+			break;
+
+		case 'i':
+			mode_ibib = 1;
+			break;
+
+		case 'n':
+			strcpy(fname, "nul");
+			break;
+
+		default:
+			ABORT("Station suffix supports only u/f/i/n, for example au or afu");
+		}
+	}
 
 	if (fname[0] == 0) {
 		strcpy(fname, argv[0]);

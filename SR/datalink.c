@@ -1,10 +1,3 @@
-/**
- * @ Author: LLynn51 (GBN Original), SR adaptation
- * @ Create Time: 2026-05-15
- * @ Description: 选择重传(SR)协议实现
- *   =========== 与GBN协议的关键差异标记为 /* [SR] */ ===========
- */
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,65 +5,52 @@
 #include "protocol.h"
 #include "datalink.h"
 
-/* ================================================================
- * [SR] 定时器参数（与GBN版本一致）
- * ================================================================ */
-#define DATA_TIMER  2000
+#define DATA_TIMER 2000
 #define ACK_TIMER 150
 
-/* ================================================================
- * [SR] 常量与宏定义（与GBN版本一致）
- * ================================================================ */
-#define ABSOLUTE_MAX_SEQ_NUM 255
-static int no_nak = 1;
-#define inc(k) if((k) < max_seq_num) (k)++; else (k) = 0;
-#define between(a,b,c) (((a)<=(b) && (b)<(c)) || ((c)<(a) && (a)<=(b)) || ((b)<(c) && (c)<(a)))
-int max_seq_num=7;
-/* [SR] SR协议窗口大小限制：W ≤ (MAX_SEQ+1)/2，以避免序列号歧义
- *   例如max_seq_num=7时，序列号空间为0~7共8个，SR窗口≤4 */
-int sr_window_size = 4;  // 在main()中根据max_seq_num动态计算
+/*
+ * protocol.c has 128 data timers (0..127).  Keep the sequence space inside
+ * that range so every outstanding frame can own a valid timer.
+ */
+#define MAX_SEQ_LIMIT 127
+#define DEFAULT_SR_WINDOW_SIZE 4
 
-/* ================================================================
- * [SR] 帧结构定义（与GBN版本完全一致）
- * ================================================================ */
+#define inc(k) do { if ((k) < max_seq_num) (k)++; else (k) = 0; } while (0)
+#define between(a,b,c) (((a) <= (b) && (b) < (c)) || ((c) < (a) && (a) <= (b)) || ((b) < (c) && (c) < (a)))
+
+static int max_seq_num = DEFAULT_SR_WINDOW_SIZE * 2 - 1;
+static int sr_window_size = DEFAULT_SR_WINDOW_SIZE;
+static int no_nak = 1;
+
 struct FRAME {
-    unsigned char kind;  // FRAME_DATA=1, FRAME_ACK=2, FRAME_NAK=3
-    unsigned char ack;   // [SR] 独立ACK：确认号表示具体收到哪一帧（非累积）
-    unsigned char seq;   // 当前发送帧的序号
-    unsigned char data[PKT_LEN]; // 有效载荷256字节
-    unsigned int  padding;
+    unsigned char kind;
+    unsigned char ack;
+    unsigned char seq;
+    unsigned char data[PKT_LEN];
+    unsigned int padding;
 };
 
-/* ================================================================
- * [SR] 发送方变量（与GBN版本一致）
- * ================================================================ */
-static unsigned char send_window_l = 0, send_window_r = 0;
-static unsigned char buffer[ABSOLUTE_MAX_SEQ_NUM+1][PKT_LEN], nbuffered = 0;
-/* [SR] 发送方新增：记录发送窗口中哪些帧已被确认 */
-static int acked[ABSOLUTE_MAX_SEQ_NUM + 1] = {0};
+static unsigned char send_window_l = 0;
+static unsigned char send_window_r = 0;
+static unsigned char frame_expected = 0;
+static int nbuffered = 0;
 static int phl_ready = 0;
 
-/* ================================================================
- * [SR] 接收方变量 —— SR核心差异：使用完整接收窗口
- *   GBN: 只有一个变量 frame_expected，接收窗口大小=1
- *   SR:  维护接收窗口[recv_window_l, recv_window_r)，大小=sr_window_size
- * ================================================================ */
-static unsigned char recv_window_l = 0;  // 接收窗口左沿（下一个期望的有序帧）
-static unsigned char recv_window_r = 4;  // [SR] 接收窗口右沿（初始化为sr_window_size）
-/* [SR] 接收方新增：标记接收窗口中哪些帧已到达（用于缓存乱序帧） */
-static int arrived[ABSOLUTE_MAX_SEQ_NUM + 1] = {0};
-/* [SR] 接收方新增：乱序帧缓存区 */
-static unsigned char recv_buffer[ABSOLUTE_MAX_SEQ_NUM + 1][PKT_LEN];
+static unsigned char send_buffer[MAX_SEQ_LIMIT + 1][PKT_LEN];
+static unsigned char recv_buffer[MAX_SEQ_LIMIT + 1][PKT_LEN];
+static int acked[MAX_SEQ_LIMIT + 1];
+static int arrived[MAX_SEQ_LIMIT + 1];
 
-/* ================================================================
- * 以下辅助函数与GBN版本结构相同，但ACK语义已改为独立确认
- * ================================================================ */
+static unsigned char last_in_order_ack(void)
+{
+    return frame_expected == 0 ? (unsigned char)max_seq_num : (unsigned char)(frame_expected - 1);
+}
 
-static void trace_window_state(const char* action) {
-    /* [SR] 相比GBN，额外打印接收窗口右沿、SR窗口大小 */
-    dbg_event("[%s] SendWin:[%d,%d) nb=%d | RecvWin:[%d,%d) | sr_win=%d\n",
-            action, send_window_l, send_window_r, nbuffered,
-            recv_window_l, recv_window_r, sr_window_size);
+static void trace_window_state(const char *action)
+{
+    dbg_event("[%s] SendWin:[%d,%d) nb=%d | RecvBase:%d | W=%d\n",
+              action, send_window_l, send_window_r, nbuffered,
+              frame_expected, sr_window_size);
 }
 
 static void put_frame(unsigned char *frame, int len)
@@ -80,76 +60,117 @@ static void put_frame(unsigned char *frame, int len)
     phl_ready = 0;
 }
 
-/* [SR] send_nak_frame: 与GBN结构相同，但NAK的语义变为请求单个缺失帧 */
-static void send_nak_frame(void)
+static void send_ack_frame(unsigned char ack)
 {
     struct FRAME s;
-    s.kind = FRAME_NAK;
-    if(recv_window_l == 0) s.ack = max_seq_num;
-    else s.ack = recv_window_l - 1;
-    dbg_frame("Send NAK %d\n", s.ack);
-    put_frame((unsigned char *)&s, 2);
-}
 
-/* [SR] send_data_frame: 结构与GBN一致，但捎带ACK语义变为独立确认 */
-static void send_data_frame(unsigned char frame_nr)
-{
-    struct FRAME s;
-    s.kind = FRAME_DATA;
-    s.seq = frame_nr;
-    /* [SR] 捎带ACK：确认最后收到的有序帧（独立ACK语义） */
-    if(recv_window_l == 0) s.ack = max_seq_num;
-    else s.ack = recv_window_l - 1;
-    memcpy(s.data, buffer[s.seq], PKT_LEN);
-    dbg_frame("Send DATA %d %d, ID %d\n", s.seq, s.ack, *(short *)s.data);
-    put_frame((unsigned char *)&s, 3 + PKT_LEN);
-    start_timer(frame_nr, DATA_TIMER);
-}
-
-static void send_ack_frame(void)
-{
-    struct FRAME s;
+    memset(&s, 0, sizeof(s));
     s.kind = FRAME_ACK;
-    if(recv_window_l == 0) s.ack = max_seq_num;
-    else s.ack = recv_window_l - 1;
+    s.ack = ack;
+
     dbg_frame("Send ACK  %d\n", s.ack);
     put_frame((unsigned char *)&s, 2);
 }
 
-int main(int argc, char **argv)
+static void send_nak_frame(void)
 {
-    int event, arg;
-    struct FRAME f;
-    int len = 0;
+    struct FRAME s;
 
-    /* ================================================================
-     * [SR] 命令行参数解析：-w 设置max_seq_num，SR窗口自动为(max_seq_num+1)/2
-     * ================================================================ */
-    for(int i = 1; i < argc; i++) {
+    memset(&s, 0, sizeof(s));
+    s.kind = FRAME_NAK;
+    s.ack = last_in_order_ack();
+
+    dbg_frame("Send NAK %d\n", s.ack);
+    put_frame((unsigned char *)&s, 2);
+}
+
+static void send_data_frame(unsigned char frame_nr)
+{
+    struct FRAME s;
+
+    memset(&s, 0, sizeof(s));
+    s.kind = FRAME_DATA;
+    s.seq = frame_nr;
+    s.ack = last_in_order_ack();
+    memcpy(s.data, send_buffer[frame_nr], PKT_LEN);
+
+    dbg_frame("Send DATA %d %d, ID %d\n", s.seq, s.ack, *(unsigned short *)s.data);
+    put_frame((unsigned char *)&s, 3 + PKT_LEN);
+    start_timer(frame_nr, DATA_TIMER);
+}
+
+static void acknowledge_frame(unsigned char ack)
+{
+    if (nbuffered > 0 && between(send_window_l, ack, send_window_r)) {
+        acked[ack] = 1;
+        stop_timer(ack);
+    }
+
+    while (nbuffered > 0 && acked[send_window_l]) {
+        acked[send_window_l] = 0;
+        stop_timer(send_window_l);
+        nbuffered--;
+        inc(send_window_l);
+    }
+}
+
+static int in_receive_window(unsigned char seq)
+{
+    unsigned char right = frame_expected;
+    int i;
+
+    for (i = 0; i < sr_window_size; i++) {
+        inc(right);
+    }
+
+    return between(frame_expected, seq, right);
+}
+
+static void deliver_ordered_frames(void)
+{
+    while (arrived[frame_expected]) {
+        put_packet(recv_buffer[frame_expected], PKT_LEN);
+        arrived[frame_expected] = 0;
+        inc(frame_expected);
+    }
+}
+
+static void parse_window_option(int argc, char **argv)
+{
+    int i;
+
+    for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
-            max_seq_num = atoi(argv[i + 1]);
+            sr_window_size = atoi(argv[i + 1]);
             argv[i][0] = '\0';
-            argv[i+1][0] = '\0';
-            if (max_seq_num <= 0 || max_seq_num > ABSOLUTE_MAX_SEQ_NUM) {
-                max_seq_num = 7;
-            }
+            argv[i + 1][0] = '\0';
+            break;
         }
     }
 
-    /* [SR] SR窗口大小必须≤(MAX_SEQ+1)/2，否则会产生序列号歧义 */
-    sr_window_size = (max_seq_num + 1) / 2;
-    /* [SR] 初始化接收窗口右沿 */
-    recv_window_r = sr_window_size;
-    /* [SR] 初始化acked和arrived数组 */
-    for (int i = 0; i <= ABSOLUTE_MAX_SEQ_NUM; i++) {
-        acked[i] = 0;
-        arrived[i] = 0;
-    }
+    if (sr_window_size <= 0)
+        sr_window_size = DEFAULT_SR_WINDOW_SIZE;
+    if (sr_window_size > (MAX_SEQ_LIMIT + 1) / 2)
+        sr_window_size = (MAX_SEQ_LIMIT + 1) / 2;
+
+    max_seq_num = sr_window_size * 2 - 1;
+}
+
+int main(int argc, char **argv)
+{
+    int event;
+    int arg;
+    int len;
+    struct FRAME f;
+
+    parse_window_option(argc, argv);
+    memset(acked, 0, sizeof(acked));
+    memset(arrived, 0, sizeof(arrived));
 
     protocol_init(argc, argv);
 
-    lprintf("Designed by LLynn51 (GBN) / SR adaptation, build: " __DATE__"  "__TIME__"\n");
-    lprintf("Protocol: Selective Repeat | Piggybacking: Enabled | NAK: Enabled | MAX_SEQ:%d | SR_Window:%d\n",
+    lprintf("Designed by LLynn51 / fixed SR, build: " __DATE__ "  " __TIME__ "\n");
+    lprintf("Protocol: Selective Repeat | per-frame ACK | NAK | MAX_SEQ:%d | Window:%d\n",
             max_seq_num, sr_window_size);
 
     disable_network_layer();
@@ -158,11 +179,8 @@ int main(int argc, char **argv)
         event = wait_for_event(&arg);
 
         switch (event) {
-        /* ================================================================
-         * 网络层就绪：与GBN相同（使用sr_window_size控制流量）
-         * ================================================================ */
         case NETWORK_LAYER_READY:
-            get_packet(buffer[send_window_r]);
+            get_packet(send_buffer[send_window_r]);
             nbuffered++;
             send_data_frame(send_window_r);
             inc(send_window_r);
@@ -170,120 +188,76 @@ int main(int argc, char **argv)
             trace_window_state("NETWORK_LAYER_READY");
             break;
 
-        /* ================================================================
-         * 物理层就绪：与GBN完全相同
-         * ================================================================ */
         case PHYSICAL_LAYER_READY:
             phl_ready = 1;
             break;
 
-        /* ================================================================
-         * [SR] 收到帧：这是SR与GBN差异最大的部分
-         *   GBN: 只接受frame_expected帧，乱序则丢弃+发NAK，使用累积ACK
-         *   SR:  接受接收窗口内任意帧，缓存乱序帧，使用独立ACK
-         * ================================================================ */
         case FRAME_RECEIVED:
-            len = recv_frame((unsigned char *)&f, sizeof f);
+            len = recv_frame((unsigned char *)&f, sizeof(f));
             if (len < 5 || crc32((unsigned char *)&f, len) != 0) {
-                dbg_event("**** Receiver Error, Bad CRC Checksum\n");
+                dbg_event("**** Bad CRC, NAK expected frame %d\n", frame_expected);
+                if (no_nak) {
+                    send_nak_frame();
+                    no_nak = 0;
+                }
                 break;
             }
 
-            /* ---- [SR] 收到ACK帧：独立ACK处理（GBN是累积ACK） ---- */
             if (f.kind == FRAME_ACK) {
                 dbg_frame("Recv ACK  %d\n", f.ack);
-                /* [SR] 只有一个帧被确认，而非GBN的全部累积确认 */
-                if (between(send_window_l, f.ack, send_window_r)) {
-                    acked[f.ack] = 1;
-                }
-            }
-
-            /* ---- [SR] 收到NAK帧：仅重传缺失的那一帧（GBN重传全部） ---- */
-            if (f.kind == FRAME_NAK) {
+                acknowledge_frame(f.ack);
+            } else if (f.kind == FRAME_NAK) {
                 unsigned char missing = f.ack;
+
                 inc(missing);
-                dbg_frame("**** Recv NAK %d, retransmit frame %d\n", f.ack, missing);
-                /* [SR] 只重传missing那一帧，不连带重传后续所有帧 */
-                if (between(send_window_l, missing, send_window_r)) {
+                dbg_frame("**** Recv NAK %d, retransmit DATA %d\n", f.ack, missing);
+                if (between(send_window_l, missing, send_window_r) && !acked[missing])
                     send_data_frame(missing);
-                }
-            }
+            } else if (f.kind == FRAME_DATA) {
+                int was_expected;
 
-            /* ---- [SR] 收到数据帧：SR与GBN的核心差异所在 ---- */
-            if (f.kind == FRAME_DATA) {
-                dbg_frame("Recv DATA %d %d, ID %d\n", f.seq, f.ack, *(short *)f.data);
+                dbg_frame("Recv DATA %d %d, ID %d\n", f.seq, f.ack, *(unsigned short *)f.data);
 
-                /* [SR] 只要帧序号落在接收窗口[recv_window_l, recv_window_r)内就接受
-                 *   GBN版本此处仅接受f.seq==frame_expected的帧 */
-                if (between(recv_window_l, f.seq, recv_window_r)) {
-                    /* [SR] 缓存乱序帧（避免重复接收同一帧） */
+                was_expected = (f.seq == frame_expected);
+                if (in_receive_window(f.seq)) {
                     if (!arrived[f.seq]) {
                         arrived[f.seq] = 1;
                         memcpy(recv_buffer[f.seq], f.data, PKT_LEN);
                     }
-                    /* [SR] 按序交付：从recv_window_l开始，连续交付所有已到达的帧 */
-                    while (arrived[recv_window_l]) {
-                        put_packet(recv_buffer[recv_window_l], PKT_LEN);
-                        arrived[recv_window_l] = 0;
-                        inc(recv_window_l);
-                        inc(recv_window_r);  /* 接收窗口同步滑动 */
+
+                    send_ack_frame(f.seq);
+
+                    if (!was_expected && no_nak) {
+                        send_nak_frame();
+                        no_nak = 0;
                     }
+
+                    deliver_ordered_frames();
+                    if (was_expected)
+                        no_nak = 1;
                     start_ack_timer(ACK_TIMER);
-                    no_nak = 1;
-                } else if (no_nak) {
-                    /* [SR] 帧不在接收窗口内，发送NAK请求缺失帧 */
-                    dbg_event("**** Frame %d outside recv window [%d,%d), sending NAK\n",
-                              f.seq, recv_window_l, recv_window_r);
-                    send_nak_frame();
-                    no_nak = 0;
+                } else {
+                    send_ack_frame(f.seq);
                 }
             }
 
-            /* ---- [SR] 发送窗口滑动：只滑动连续ACK的帧（GBN是累积滑动） ---- */
-            /* [SR] 处理捎带ACK（数据帧中携带的ACK信息）及纯ACK帧 */
-            if (f.kind == FRAME_DATA && between(send_window_l, f.ack, send_window_r)) {
-                /* [SR] 数据帧中的捎带独立ACK */
-                acked[f.ack] = 1;
-            }
-            /* [SR] 从窗口左端开始，连续滑动已被确认的帧 */
-            while (acked[send_window_l] && nbuffered > 0) {
-                acked[send_window_l] = 0;
-                nbuffered--;
-                stop_timer(send_window_l);
-                inc(send_window_l);
-            }
             trace_window_state("FRAME_RECEIVED");
             break;
 
-        /* ================================================================
-         * ACK超时：与GBN相同（发送纯ACK帧）
-         * ================================================================ */
         case ACK_TIMEOUT:
-            dbg_event("**** ACK_TIMER expired, send pure ACK.\n");
-            send_ack_frame();
+            dbg_event("**** ACK timer expired\n");
+            send_ack_frame(last_in_order_ack());
             trace_window_state("ACK_TIMEOUT");
             break;
 
-        /* ================================================================
-         * [SR] 数据超时：SR与GBN的最大差异之一
-         *   GBN: 从send_window_l开始重传窗口内全部帧
-         *   SR:  只重传超时(arg)的那一帧！
-         * ================================================================ */
         case DATA_TIMEOUT:
-            dbg_event("**** DATA %d timeout, retransmit ONLY this frame\n", arg);
-            /* [SR] 关键差异：仅重传超时的单个帧，不连坐重传后续帧 */
-            if (between(send_window_l, (unsigned char)arg, send_window_r)) {
+            dbg_event("**** DATA %d timeout, retransmit\n", arg);
+            if (between(send_window_l, (unsigned char)arg, send_window_r) && !acked[(unsigned char)arg])
                 send_data_frame((unsigned char)arg);
-            }
             trace_window_state("DATA_TIMEOUT");
             break;
         }
 
-        /* ================================================================
-         * [SR] 流量控制：使用sr_window_size代替max_seq_num
-         *   GBN: nbuffered < max_seq_num（W=7）
-         *   SR:  nbuffered < sr_window_size（W=4，因为W≤(MAX_SEQ+1)/2）
-         * ================================================================ */
         if (nbuffered < sr_window_size && phl_ready)
             enable_network_layer();
         else
