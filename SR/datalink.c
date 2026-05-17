@@ -40,6 +40,7 @@ static unsigned char send_buffer[MAX_SEQ_LIMIT + 1][PKT_LEN];
 static unsigned char recv_buffer[MAX_SEQ_LIMIT + 1][PKT_LEN];
 static int acked[MAX_SEQ_LIMIT + 1];
 static int arrived[MAX_SEQ_LIMIT + 1];
+static int ack_needed[MAX_SEQ_LIMIT + 1];
 
 static unsigned char last_in_order_ack(void)
 {
@@ -58,6 +59,39 @@ static void put_frame(unsigned char *frame, int len)
     *(unsigned int *)(frame + len) = crc32(frame, len);
     send_frame(frame, len + 4);
     phl_ready = 0;
+}
+
+static int has_pending_ack(void)
+{
+    int i;
+
+    for (i = 0; i <= max_seq_num; i++) {
+        if (ack_needed[i])
+            return 1;
+    }
+
+    return 0;
+}
+
+static int pop_pending_ack(unsigned char *ack)
+{
+    int i;
+
+    for (i = 0; i <= max_seq_num; i++) {
+        if (ack_needed[i]) {
+            ack_needed[i] = 0;
+            *ack = (unsigned char)i;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void remember_ack(unsigned char ack)
+{
+    ack_needed[ack] = 1;
+    start_ack_timer(ACK_TIMER);
 }
 
 static void send_ack_frame(unsigned char ack)
@@ -87,16 +121,26 @@ static void send_nak_frame(void)
 static void send_data_frame(unsigned char frame_nr)
 {
     struct FRAME s;
+    int piggybacked_ack;
 
     memset(&s, 0, sizeof(s));
     s.kind = FRAME_DATA;
     s.seq = frame_nr;
-    s.ack = last_in_order_ack();
+    piggybacked_ack = pop_pending_ack(&s.ack);
+    if (!piggybacked_ack)
+        s.ack = last_in_order_ack();
     memcpy(s.data, send_buffer[frame_nr], PKT_LEN);
 
     dbg_frame("Send DATA %d %d, ID %d\n", s.seq, s.ack, *(unsigned short *)s.data);
     put_frame((unsigned char *)&s, 3 + PKT_LEN);
     start_timer(frame_nr, DATA_TIMER);
+
+    if (piggybacked_ack) {
+        if (has_pending_ack())
+            start_ack_timer(ACK_TIMER);
+        else
+            stop_ack_timer();
+    }
 }
 
 static void acknowledge_frame(unsigned char ack)
@@ -159,11 +203,13 @@ int main(int argc, char **argv)
     int event;
     int arg;
     int len;
+    unsigned char ack_to_send;
     struct FRAME f;
 
     parse_window_option(argc, argv);
     memset(acked, 0, sizeof(acked));
     memset(arrived, 0, sizeof(arrived));
+    memset(ack_needed, 0, sizeof(ack_needed));
 
     protocol_init(argc, argv);
 
@@ -215,6 +261,7 @@ int main(int argc, char **argv)
                 int was_expected;
 
                 dbg_frame("Recv DATA %d %d, ID %d\n", f.seq, f.ack, *(unsigned short *)f.data);
+                acknowledge_frame(f.ack);
 
                 was_expected = (f.seq == frame_expected);
                 if (in_receive_window(f.seq)) {
@@ -223,7 +270,7 @@ int main(int argc, char **argv)
                         memcpy(recv_buffer[f.seq], f.data, PKT_LEN);
                     }
 
-                    send_ack_frame(f.seq);
+                    remember_ack(f.seq);
 
                     if (!was_expected && no_nak) {
                         send_nak_frame();
@@ -243,7 +290,13 @@ int main(int argc, char **argv)
 
         case ACK_TIMEOUT:
             dbg_event("**** ACK timer expired\n");
-            send_ack_frame(last_in_order_ack());
+            if (pop_pending_ack(&ack_to_send)) {
+                send_ack_frame(ack_to_send);
+                if (has_pending_ack())
+                    start_ack_timer(ACK_TIMER);
+            } else {
+                send_ack_frame(last_in_order_ack());
+            }
             trace_window_state("ACK_TIMEOUT");
             break;
 
